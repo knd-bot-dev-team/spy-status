@@ -139,18 +139,24 @@ export class SpyStatus extends plugin {
     return { appName, windowTitle }
   }
 
+  /** 去掉字符串开头可能因编码损坏产生的乱码（ U+FFFD、孤立代理对）或音乐符号（🎶🎵） */
+  trimLeadingNoise(s) {
+    if (!s || typeof s !== 'string') return s
+    return s.replace(/^[\uFFFD\s\uD800-\uDFFF]+/, '').trim()
+  }
+
   /** 判断是否为音乐类窗口标题（🎶 或 🎵 开头），并解析出应用名与曲目 */
   parseMusicWindowTitle(fullTitle) {
     if (!fullTitle || typeof fullTitle !== 'string') return null
     const raw = fullTitle.trim()
-    const isMusic = raw.startsWith('🎶') || raw.startsWith('🎵')
+    const isMusic = /^[\uFFFD\uD83C\uDFB5\uD83C\uDFB6🎶🎵]/.test(raw) || raw.startsWith('🎶') || raw.startsWith('🎵')
     if (!isMusic) return null
-    const rest = raw.replace(/^[🎶🎵]\s*/, '')
+    const rest = this.trimLeadingNoise(raw)
     const sep = ' - '
     const idx = rest.indexOf(sep)
-    if (idx === -1) return { app: rest || '未知', song: rest || '' }
-    const app = rest.slice(0, idx).trim() || '未知'
-    const song = rest.slice(idx + sep.length).trim() || ''
+    if (idx === -1) return { app: this.trimLeadingNoise(rest) || '未知', song: this.trimLeadingNoise(rest) || '' }
+    const app = this.trimLeadingNoise(rest.slice(0, idx)) || '未知'
+    const song = this.trimLeadingNoise(rest.slice(idx + sep.length)) || ''
     return { app, song }
   }
 
