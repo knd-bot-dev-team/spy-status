@@ -126,6 +126,34 @@ export class SpyStatus extends plugin {
     return (first != null && first.trim() !== '') ? first.trim() : '-'
   }
 
+  /**
+   * 解析浏览器式窗口标题：多为「页面内容 - 附加 - 应用名」，取最后一段为应用、前面为窗口标题
+   * 例如：xxx - 个人 - Microsoft​ Edge → 应用=Microsoft​ Edge，窗口标题=xxx - 个人
+   */
+  parseBrowserStyleTitle(fullTitle) {
+    if (!fullTitle || typeof fullTitle !== 'string') return null
+    const parts = fullTitle.split(' - ').map((p) => p.trim()).filter(Boolean)
+    if (parts.length < 2) return null
+    const appName = parts[parts.length - 1]
+    const windowTitle = parts.slice(0, -1).join(' - ')
+    return { appName, windowTitle }
+  }
+
+  /** 判断是否为音乐类窗口标题（🎶 或 🎵 开头），并解析出应用名与曲目 */
+  parseMusicWindowTitle(fullTitle) {
+    if (!fullTitle || typeof fullTitle !== 'string') return null
+    const raw = fullTitle.trim()
+    const isMusic = raw.startsWith('🎶') || raw.startsWith('🎵')
+    if (!isMusic) return null
+    const rest = raw.replace(/^[🎶🎵]\s*/, '')
+    const sep = ' - '
+    const idx = rest.indexOf(sep)
+    if (idx === -1) return { app: rest || '未知', song: rest || '' }
+    const app = rest.slice(0, idx).trim() || '未知'
+    const song = rest.slice(idx + sep.length).trim() || ''
+    return { app, song }
+  }
+
   /** 是否为不输出的噪音应用（精确匹配：应用名与列表项完全一致） */
   isNoiseApp(appName) {
     return NOISE_APPS.some((a) => (appName || '').trim() === a)
@@ -165,7 +193,7 @@ export class SpyStatus extends plugin {
     return `${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')} ${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`
   }
 
-  /** 雨核/音落/夜合：按皮梦逻辑，手机/电脑各一块，每块只展示一条最新 */
+  /** 雨核/音落/夜合：按皮梦逻辑，手机/电脑各一块，每块只展示一条最新；支持 🎶/🎵 音乐窗口解析为「在听什么歌」 */
   formatPersonBlock(name, phoneData, pcData) {
     let phoneBlock
     if (!phoneData) {
@@ -176,10 +204,17 @@ export class SpyStatus extends plugin {
         const text = this.isScreenOffApp(appName) ? '熄屏' : '暂无数据'
         phoneBlock = ['====== 手机状态 ======', `  ${text}`, `来自：${name} の 手机`, ''].join('\n')
       } else {
-        const app = this.getDisplayAppNameForPhone(phoneData)
-        const content = (app === '游戏助推器')
-          ? '在打游戏，但是采集不到在打什么神秘游戏'
-          : `▶应用：${app}`
+        const rawTitle = (phoneData.window_title || phoneData.app || '').trim()
+        const music = this.parseMusicWindowTitle(rawTitle)
+        let content
+        if (music) {
+          content = `🎵正在听：${music.song}\n▶应用：${music.app}`
+        } else {
+          const app = this.getDisplayAppNameForPhone(phoneData)
+          content = (app === '游戏助推器')
+            ? '在打游戏，但是采集不到在打什么神秘游戏'
+            : `▶应用：${app}`
+        }
         phoneBlock = [
           '====== 手机状态 ======',
           content,
@@ -194,12 +229,24 @@ export class SpyStatus extends plugin {
       pcBlock = ['====== 电脑状态 ======', '  暂无数据', `来自：${name} の PC`].join('\n')
     } else {
       const fullWindowTitle = pcData.window_title || '未知窗口'
-      const parts = fullWindowTitle.split(' - ')
-      const appName = parts[0] || '未知'
+      const music = this.parseMusicWindowTitle(fullWindowTitle)
+      let pcContent
+      if (music) {
+        pcContent = `🎵正在听：${music.song}\n▶应用：${music.app}`
+      } else {
+        const browser = this.parseBrowserStyleTitle(fullWindowTitle)
+        if (browser) {
+          pcContent = `▶应用：${browser.appName}\n▶窗口标题：${browser.windowTitle}`
+        } else {
+          const parts = fullWindowTitle.split(' - ')
+          const appName = parts[0] || '未知'
+          pcContent = `▶应用：${appName}\n▶窗口标题：${fullWindowTitle}`
+        }
+      }
       pcBlock = [
         '====== 电脑状态 ======',
         `💻${name}的电脑正在运行：`,
-        `▶应用：${appName}\n▶窗口标题：${fullWindowTitle}`,
+        pcContent,
         `时间：${this.fmtTime(pcData)}`,
         `来自：${name} の PC`
       ].join('\n')
@@ -248,12 +295,11 @@ export class SpyStatus extends plugin {
       } else {
         let phonePrefix, phoneContent
         const wt = phoneData.window_title || ''
-        if (wt.startsWith('🎵')) {
-          const fullTitle = wt.replace(/^🎵\s*/, '')
-          const [appName, ...songParts] = fullTitle.split(' - ')
-          const songName = songParts.join(' - ') || fullTitle
+        const musicPimeng = this.parseMusicWindowTitle(wt)
+        if (musicPimeng) {
+          const { app: appName, song: songName } = musicPimeng
           phonePrefix = '🎵皮梦正在听音乐：'
-          phoneContent = `▶曲目：${songName}\n▶用${appName || '未知应用'}听的`
+          phoneContent = `▶曲目：${songName}\n▶用${appName}听的`
         } else {
           const [appName] = wt.split(' - ')
           if (appName === '三角洲行动') phoneContent = '得吃'
@@ -278,12 +324,23 @@ export class SpyStatus extends plugin {
       pcBlock = ['====== 电脑状态 ======', '  暂无数据', '来自：皮梦 の PC'].join('\n')
     } else {
       const fullWindowTitle = pcData.window_title || '未知窗口'
-      const parts = fullWindowTitle.split(' - ')
-      const appName = parts[0] || '未知'
+      const musicPc = this.parseMusicWindowTitle(fullWindowTitle)
+      let pcContent
+      if (musicPc) {
+        pcContent = `🎵正在听：${musicPc.song}\n▶应用：${musicPc.app}`
+      } else {
+        const browserPc = this.parseBrowserStyleTitle(fullWindowTitle)
+        if (browserPc) {
+          pcContent = `▶应用：${browserPc.appName}\n▶窗口标题：${browserPc.windowTitle}`
+        } else {
+          const first = fullWindowTitle.split(' - ')[0] || '未知'
+          pcContent = `▶应用：${first}\n▶窗口标题：${fullWindowTitle}`
+        }
+      }
       pcBlock = [
         '====== 电脑状态 ======',
         '💻皮梦的电脑正在运行：',
-        `▶应用：${appName}\n▶窗口标题：${fullWindowTitle}`,
+        pcContent,
         `时间：${fmtTime(pcData)}`,
         '来自：皮梦 の PC'
       ].join('\n')
@@ -318,7 +375,7 @@ export class SpyStatus extends plugin {
     const c = this.spyStatusCfg
     const persons = Array.isArray(c.persons) ? c.persons : []
     const teamTrigger = c.teamTrigger || '时间开发团队'
-    const triggers = [...persons.map((p) => (p && p.trigger) || '').filter(Boolean), teamTrigger]
+    const triggers = [...persons.map((p) => (p && p.trigger) || '').filter(Boolean), teamTrigger, '时间所有人']
     const reg = triggers.length > 0 ? new RegExp(`^(${triggers.join('|')})\\s*$`) : /^$/
     const raw = (this.e.msg || '').trim()
     const match = raw.match(reg)
