@@ -1,11 +1,13 @@
 /**
  * 桌面状态查询插件（多人版）
- * 调用 Web/server.js 的接口：/api/names、/api/current-status?name=xxx
+ * 调用 Web/server.js 的接口：/api/names、/api/current-status?name=xxx、/api/today-events?name=xxx
  * 指令与数据对应：时间雨核→雨核，时间音落→音落，时间夜合→夜合，时间皮梦→皮梦；时间开发团队→雨核+音落+夜合+皮梦。每人展示与皮梦一致：手机/电脑各一块，每块只展示一条最新。
+ * 「看看xx今天做了什么」：拉取当日上传事件，按心跳间隔统计设备与应用使用时长。
  *
  * 配置：
  *   - SPY_API_BASE：雨核/音落/夜合 的 Web 服务端地址，默认 http://127.0.0.1:3100
  *   - SPY_PIMENG_API_BASE：皮梦数据源，与 视奸皮梦.js 的 API_URL 一致，默认 https://shijian.lyxmb.com
+ *   - heartbeatIntervalSeconds：心跳间隔（秒），用于今日统计时长计算，默认 60
  */
 
 import plugin from '../../lib/plugins/plugin.js'
@@ -18,6 +20,7 @@ const CONFIG = {
   TIMEOUT: 10000,
   PER_PERSON_LIMIT: 5,
   CACHE_EXPIRE_TIME: 8000,
+  HEARTBEAT_INTERVAL_SECONDS: 60,
 }
 
 /** 从 config 加载 spy-status 配置（合并默认与用户配置） */
@@ -34,13 +37,15 @@ function loadSpyStatusConfig() {
 const PIMENG_PHONE_MACHINE = 'pimeng-iq13'
 const PIMENG_PC_MACHINE = 'pimeng-pc'
 /** 手机不输出到消息的应用（系统/输入法等） */
-const NOISE_APPS = ['生物识别', '系统 UI', 'Android 系统', '系统界面', '搜狗输入法小米版', '指纹UI', 'One UI 主屏幕','安全服务']
+const NOISE_APPS = ['生物识别', '系统 UI', 'Android 系统', '系统界面', '系统桌面', '搜狗输入法小米版', '指纹UI', 'One UI 主屏幕','安全服务']
 /** 仅当数据只有这些时显示「熄屏」 */
-const SCREEN_OFF_APPS = ['生物识别', '系统 UI', 'Android 系统', '指纹UI', 'One UI 主屏幕']
+const SCREEN_OFF_APPS = ['生物识别', '系统 UI', 'Android 系统', '系统桌面', '指纹UI', 'One UI 主屏幕']
 /** 电脑数据超过此时长未更新视为无活动（用于「好像睡着了」判断），毫秒 */
 const PC_STALE_MS = 4 * 60 * 60 * 1000
 /** 雨核手机出现此关键词时显示「在推制霸呢」（包含匹配） */
 const RAINCORE_ZHIBA_KEYWORD = '范式：起源'
+/** 不展示电脑状态的人员（即便服务端有 PC 事件也直接忽略，确保消息不出现） */
+const HIDE_PC_NAMES = ['音落', '夜合']
 
 const cache = {
   byNames: {},
@@ -62,12 +67,14 @@ export class SpyStatus extends plugin {
     const teamTrigger = spyCfg.teamTrigger || '时间开发团队'
     const triggers = [...persons.map((p) => (p && p.trigger) || '').filter(Boolean), teamTrigger, '时间所有人']
     const reg = triggers.length > 0 ? new RegExp(`^(${triggers.join('|')})\\s*$`) : /^$/
+    const todayNames = [...new Set([...persons.map((p) => p && p.name).filter(Boolean), ...(Array.isArray(spyCfg.teamNames) ? spyCfg.teamNames : [])])]
+    const regToday = todayNames.length > 0 ? new RegExp(`^看看(${todayNames.join('|')})今天做了什么\\s*$`) : /^$/
     super({
       name: 'spy-status',
       dsc: '查询桌面状态（多人，对接 Web/server.js）；人物与指令在 config/config/spy-status.yaml 配置',
       event: 'message',
       priority: 5000,
-      rule: [{ reg, fnc: 'query' }],
+      rule: [{ reg, fnc: 'query' }, { reg: regToday, fnc: 'queryToday' }],
     })
     this.spyStatusCfg = spyCfg
   }
@@ -89,6 +96,16 @@ export class SpyStatus extends plugin {
   async fetchStatusByName(name, limit = CONFIG.PER_PERSON_LIMIT, apiBase) {
     const base = apiBase != null ? apiBase : CONFIG.API_BASE
     const url = this.getApiUrl('/api/current-status', { name, limit }, base)
+    const res = await fetchWithTimeout(url)
+    if (!res.ok) throw new Error(`请求失败: HTTP ${res.status}`)
+    const list = await res.json()
+    return Array.isArray(list) ? list : []
+  }
+
+  /** 拉取某人当天上传的事件（需服务端实现 GET /api/today-events?name=xxx，返回 [{ machine, window_title, app, access_time }, ...]） */
+  async fetchTodayEvents(name, apiBase) {
+    const base = apiBase != null ? apiBase : CONFIG.API_BASE
+    const url = this.getApiUrl('/api/today-events', { name }, base)
     const res = await fetchWithTimeout(url)
     if (!res.ok) throw new Error(`请求失败: HTTP ${res.status}`)
     const list = await res.json()
@@ -137,6 +154,32 @@ export class SpyStatus extends plugin {
     const appName = parts[parts.length - 1]
     const windowTitle = parts.slice(0, -1).join(' - ')
     return { appName, windowTitle }
+  }
+
+  /** 今日统计用：从 event 解析出用于分组的应用名（手机取应用名/音乐取应用，电脑取浏览器式最后一段或首段） */
+  getAppNameForStats(ev, isPhone) {
+    if (!ev) return '未知'
+    const raw = (ev.window_title || ev.app || '').trim()
+    const music = this.parseMusicWindowTitle(raw)
+    if (music) return this.trimLeadingNoise(music.app) || '未知'
+    if (isPhone) {
+      const app = (raw.split(' - ')[0] || '').trim()
+      return this.trimLeadingNoise(app) || '未知'
+    }
+    const browser = this.parseBrowserStyleTitle(raw)
+    if (browser) return browser.appName.trim() || '未知'
+    const first = (raw.split(' - ')[0] || '').trim()
+    return first || '未知'
+  }
+
+  /** 秒数格式化为「x小时x分钟」 */
+  formatDuration(seconds) {
+    const h = Math.floor(seconds / 3600)
+    const m = Math.floor((seconds % 3600) / 60)
+    if (h > 0 && m > 0) return `${h}小时${m}分钟`
+    if (h > 0) return `${h}小时`
+    if (m > 0) return `${m}分钟`
+    return '不足1分钟'
   }
 
   /** 去掉字符串开头可能因编码损坏产生的乱码（ U+FFFD、孤立代理对）或音乐符号（🎶🎵） */
@@ -200,7 +243,8 @@ export class SpyStatus extends plugin {
   }
 
   /** 雨核/音落/夜合：按皮梦逻辑，手机/电脑各一块，每块只展示一条最新；支持 🎶/🎵 音乐窗口解析为「在听什么歌」 */
-  formatPersonBlock(name, phoneData, pcData) {
+  formatPersonBlock(name, phoneData, pcData, opts = {}) {
+    const hidePc = !!opts.hidePc
     let phoneBlock
     if (!phoneData) {
       phoneBlock = ['====== 手机状态 ======', '  暂无数据', ''].join('\n')
@@ -224,12 +268,15 @@ export class SpyStatus extends plugin {
         phoneBlock = [
           '====== 手机状态 ======',
           content,
-          `时间：${this.fmtTime(phoneData)}`,
+          `更新时间：${this.fmtTime(phoneData)}`,
           `来自：${name} の 手机`,
           ''
         ].join('\n')
       }
     }
+
+    if (hidePc) return phoneBlock
+
     let pcBlock
     if (!pcData) {
       pcBlock = ['====== 电脑状态 ======', '  暂无数据', `来自：${name} の PC`].join('\n')
@@ -253,7 +300,7 @@ export class SpyStatus extends plugin {
         '====== 电脑状态 ======',
         `💻${name}的电脑正在运行：`,
         pcContent,
-        `时间：${this.fmtTime(pcData)}`,
+        `更新时间：${this.fmtTime(pcData)}`,
         `来自：${name} の PC`
       ].join('\n')
     }
@@ -273,11 +320,11 @@ export class SpyStatus extends plugin {
       return this.formatPimengMessage(phoneData, pcData)
     }
     const phoneData = events.find((e) => this.isPhoneDevice(e.machine)) || null
-    const pcData = events.find((e) => !this.isPhoneDevice(e.machine)) || null
+    const pcData = HIDE_PC_NAMES.includes(name) ? null : (events.find((e) => !this.isPhoneDevice(e.machine)) || null)
     if (this.isAsleepCondition(phoneData, pcData)) {
       return `【${name}】\n  ${name}好像睡着了呢\n`
     }
-    let msg = `【${name}】\n` + this.formatPersonBlock(name, phoneData, pcData)
+    let msg = `【${name}】\n` + this.formatPersonBlock(name, phoneData, pcData, { hidePc: HIDE_PC_NAMES.includes(name) })
     if (name === '雨核' && phoneData && this.eventContainsKeyword(phoneData, RAINCORE_ZHIBA_KEYWORD)) {
       msg += '\n雨核在推制霸呢...不要打扰他'
     }
@@ -319,7 +366,7 @@ export class SpyStatus extends plugin {
           '====== 手机状态 ======',
           phonePrefix,
           phoneContent,
-          `时间：${fmtTime(phoneData)}`,
+          `更新时间：${fmtTime(phoneData)}`,
           '来自：皮梦 の iQOO13',
           ''
         ].join('\n')
@@ -347,7 +394,7 @@ export class SpyStatus extends plugin {
         '====== 电脑状态 ======',
         '💻皮梦的电脑正在运行：',
         pcContent,
-        `时间：${fmtTime(pcData)}`,
+        `更新时间：${fmtTime(pcData)}`,
         '来自：皮梦 の PC'
       ].join('\n')
     }
@@ -374,6 +421,83 @@ export class SpyStatus extends plugin {
     const p = persons.find((x) => x && x.name === name)
     if (p && p.apiBase) return String(p.apiBase).replace(/\/$/, '')
     return CONFIG.API_BASE
+  }
+
+  /** 看看xx今天做了什么：整合当天上传数据，按心跳计算设备/应用使用时长 */
+  async queryToday() {
+    this.spyStatusCfg = loadSpyStatusConfig()
+    const c = this.spyStatusCfg
+    const raw = (this.e.msg || '').trim()
+    const match = raw.match(/^看看(.+?)今天做了什么\s*$/)
+    if (!match) return
+    const name = match[1].trim()
+    const heartbeatSec = Number(c.heartbeatIntervalSeconds) > 0 ? Number(c.heartbeatIntervalSeconds) : CONFIG.HEARTBEAT_INTERVAL_SECONDS
+    // 统计口径：按北京时间今天 00:00 到当前时刻（截止目前）
+    const BEIJING_OFFSET_MS = 8 * 60 * 60 * 1000
+    const nowMs = Date.now()
+    const bj = new Date(nowMs + BEIJING_OFFSET_MS)
+    const y = bj.getUTCFullYear()
+    const m = bj.getUTCMonth()
+    const d = bj.getUTCDate()
+    const startMs = Date.UTC(y, m, d, 0, 0, 0, 0) - BEIJING_OFFSET_MS
+    const endMs = startMs + 24 * 60 * 60 * 1000
+    const elapsedSeconds = Math.max(1, Math.floor((nowMs - startMs) / 1000))
+
+    let list
+    try {
+      const apiBase = this.getApiBaseForName(name)
+      list = await this.fetchTodayEvents(name, apiBase)
+    } catch (e) {
+      logger.warn('[spy-status] 今日事件拉取失败:', name, e && e.message)
+      await this.e.reply(`获取${name}的今日数据失败（请确认服务端已实现 /api/today-events 且可访问）：${e && e.message}`)
+      return
+    }
+
+    // 服务端已按北京时间过滤过“今日”，这里再按北京时间的 UTC 范围兜底过滤，避免时区不一致导致漏/错
+    const todayEvents = (list || []).filter((ev) => {
+      if (!ev || !ev.access_time) return false
+      const t = new Date(ev.access_time).getTime()
+      return !isNaN(t) && t >= startMs && t < endMs
+    })
+    if (todayEvents.length === 0) {
+      await this.e.reply(`${name}今天还没有上传过数据呢，视奸不到哦`)
+      return
+    }
+
+    const phoneEvents = todayEvents.filter((e) => this.isPhoneDevice(e.machine))
+    const pcEvents = HIDE_PC_NAMES.includes(name) ? [] : todayEvents.filter((e) => !this.isPhoneDevice(e.machine))
+
+    const buildDeviceBlock = (deviceEvents, deviceLabel) => {
+      if (!deviceEvents.length) return { lines: [], coveredSeconds: 0, percentOfDay: 0 }
+      const totalHeartbeats = deviceEvents.length
+      const coveredSeconds = totalHeartbeats * heartbeatSec
+      const byApp = Object.create(null)
+      for (const ev of deviceEvents) {
+        const appName = this.getAppNameForStats(ev, deviceLabel === '手机')
+        byApp[appName] = (byApp[appName] || 0) + 1
+      }
+      const sorted = Object.entries(byApp)
+        .map(([app, count]) => ({ app, count, seconds: count * heartbeatSec }))
+        .sort((a, b) => b.seconds - a.seconds)
+      const lines = [`▶${deviceLabel}`]
+      sorted.forEach((item, i) => {
+        const pct = coveredSeconds > 0 ? ((item.seconds / coveredSeconds) * 100).toFixed(1) : '0'
+        lines.push(`${i + 1}.${item.app} 用了${this.formatDuration(item.seconds)} 占比${pct}%`)
+      })
+      return { lines, coveredSeconds, percentToNow: Math.min(100, (coveredSeconds / elapsedSeconds) * 100) }
+    }
+
+    const phoneBlock = buildDeviceBlock(phoneEvents, '手机')
+    const pcBlock = buildDeviceBlock(pcEvents, '电脑')
+    const totalCovered = (phoneBlock.coveredSeconds || 0) + (pcBlock.coveredSeconds || 0)
+    const totalPercent = Math.min(100, (totalCovered / elapsedSeconds) * 100)
+
+    const msg = [
+      `${name}今天截止目前有${totalPercent.toFixed(1)}%的时间都被我视奸到了呢 这是他的设备今天的使用情况`,
+      ...(phoneBlock.lines || []),
+      ...(pcBlock.lines || []),
+    ].join('\n')
+    await this.e.reply(msg, true)
   }
 
   async query() {
