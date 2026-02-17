@@ -213,6 +213,12 @@ export class SpyStatus extends plugin {
     return SCREEN_OFF_APPS.some((a) => (appName || '').trim() === a)
   }
 
+  /** 当日使用统计中是否排除该事件（熄屏类、噪音应用不参与统计与展示） */
+  isNoiseOrScreenOffForStats(ev, isPhone) {
+    const appName = this.getAppNameForStats(ev, isPhone)
+    return this.isNoiseApp(appName) || this.isScreenOffApp(appName)
+  }
+
   /** 电脑无数据或数据超过指定时长未更新 */
   isPcStale(pcData, maxAgeMs = PC_STALE_MS) {
     if (!pcData) return true
@@ -466,6 +472,9 @@ export class SpyStatus extends plugin {
 
     const phoneEvents = todayEvents.filter((e) => this.isPhoneDevice(e.machine))
     const pcEvents = HIDE_PC_NAMES.includes(name) ? [] : todayEvents.filter((e) => !this.isPhoneDevice(e.machine))
+    // 当日使用情况去除熄屏类、噪音应用（不展示且不计入时长/占比）
+    const phoneEventsFiltered = phoneEvents.filter((e) => !this.isNoiseOrScreenOffForStats(e, true))
+    const pcEventsFiltered = pcEvents.filter((e) => !this.isNoiseOrScreenOffForStats(e, false))
 
     const buildDeviceBlock = (deviceEvents, deviceLabel) => {
       if (!deviceEvents.length) return { lines: [], coveredSeconds: 0, percentOfDay: 0 }
@@ -487,8 +496,8 @@ export class SpyStatus extends plugin {
       return { lines, coveredSeconds, percentToNow: Math.min(100, (coveredSeconds / elapsedSeconds) * 100) }
     }
 
-    const phoneBlock = buildDeviceBlock(phoneEvents, '手机')
-    const pcBlock = buildDeviceBlock(pcEvents, '电脑')
+    const phoneBlock = buildDeviceBlock(phoneEventsFiltered, '手机')
+    const pcBlock = buildDeviceBlock(pcEventsFiltered, '电脑')
     const totalCovered = (phoneBlock.coveredSeconds || 0) + (pcBlock.coveredSeconds || 0)
     const totalPercent = Math.min(100, (totalCovered / elapsedSeconds) * 100)
 
