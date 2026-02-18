@@ -501,12 +501,18 @@ export class SpyStatus extends plugin {
     const totalCovered = (phoneBlock.coveredSeconds || 0) + (pcBlock.coveredSeconds || 0)
     const totalPercent = Math.min(100, (totalCovered / elapsedSeconds) * 100)
 
-    const msg = [
-      `${name}今天截止目前有${totalPercent.toFixed(1)}%的时间都被我视奸到了呢 这是他的设备今天的使用情况`,
-      ...(phoneBlock.lines || []),
-      ...(pcBlock.lines || []),
-    ].join('\n')
-    await this.e.reply(msg, true)
+    // 三条消息合并转发，直接发送不回复用户
+    const firstMsg = `${name}今天截止目前有${totalPercent.toFixed(1)}%的时间都被我视奸到了呢 这是他的设备今天的使用情况`
+    const secondMsg = (phoneBlock.lines || []).join('\n') || '▶手机\n  暂无数据'
+    const thirdMsg = (pcBlock.lines || []).join('\n') || '▶电脑\n  暂无数据'
+    const forwardBlocks = [firstMsg, secondMsg, thirdMsg]
+    const forwardMsg = await common.makeForwardMsg(this.e, forwardBlocks, `${name}今日使用情况`)
+    if (this.e.group_id) {
+      await this.e.group.sendMsg(forwardMsg)
+    } else {
+      const target = this.e.bot.pickUser(this.e.user_id)
+      if (target) await target.sendMsg(forwardMsg)
+    }
   }
 
   async query() {
