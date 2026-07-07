@@ -16,6 +16,7 @@ import cfg from '../../lib/config/config.js'
 
 const CONFIG = {
   API_BASE: process.env.SPY_API_BASE || 'http://127.0.0.1:3100',
+  RAINCORE_API_BASE: (process.env.SPY_RAINCORE_API_BASE || 'https://shijian.07210700.xyz').replace(/\/$/, ''),
   PIMENG_API_BASE: (process.env.SPY_PIMENG_API_BASE || 'https://shijian.lyxmb.com').replace(/\/$/, ''),
   TIMEOUT: 10000,
   PER_PERSON_LIMIT: 5,
@@ -116,7 +117,7 @@ export class SpyStatus extends plugin {
   isPhoneDevice(machine) {
     if (!machine) return false
     const m = String(machine).toLowerCase()
-    return /phone|android|mobile|iq13|iqoo/i.test(m)
+    return /phone|android|mobile|iq13|iqoo|sanxing|yuhe/i.test(m)
   }
 
   /** 从 event 取应用名（window_title 首段或 app），用于判断。有包名时只取「 - 」前一段，精确匹配用。 */
@@ -426,6 +427,7 @@ export class SpyStatus extends plugin {
     const persons = Array.isArray(c.persons) ? c.persons : []
     const p = persons.find((x) => x && x.name === name)
     if (p && p.apiBase) return String(p.apiBase).replace(/\/$/, '')
+    if (name === '雨核') return CONFIG.RAINCORE_API_BASE
     return CONFIG.API_BASE
   }
 
