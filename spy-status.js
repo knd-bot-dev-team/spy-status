@@ -71,7 +71,7 @@ export class SpyStatus extends plugin {
       dsc: '查询桌面状态（多人，对接 Web/server.js）；人物与指令在 config/config/spy-status.yaml 配置',
       event: 'message',
       priority: 5000,
-      rule: [{ reg: /^(?:.*?\s)?(.+?)在干嘛[?？\s]*$/, fnc: 'query' }, { reg: regToday, fnc: 'queryToday' }],
+      rule: [{ reg: /^(?:.*[\s:：,，])?(.+?)在干嘛[?？\s]*$/, fnc: 'query' }, { reg: regToday, fnc: 'queryToday' }],
     })
     this.spyStatusCfg = spyCfg
   }
@@ -412,7 +412,13 @@ export class SpyStatus extends plugin {
       return names.length > 0 ? names : null
     }
     const persons = Array.isArray(c.persons) ? c.persons : []
-    const p = persons.find((x) => x && (x.name === subject || x.trigger === subject))
+    const p = persons.find((x) => {
+      if (!x) return false
+      if (x.name === subject) return true
+      if (x.trigger === subject) return true
+      if (typeof x.trigger === 'string' && x.trigger.replace(/^时间/, '') === subject) return true
+      return false
+    })
     return p && p.name ? [p.name] : null
   }
 
@@ -523,11 +529,15 @@ export class SpyStatus extends plugin {
   async query() {
     this.spyStatusCfg = loadSpyStatusConfig()
     const c = this.spyStatusCfg
-    const raw = (this.e.msg || '').trim()
-    const match = raw.match(/^(?:.*?\s)?(.+?)在干嘛[?？\s]*$/)
-    if (!match) return
+    const raw = (this.e.msg || '').replace(/\[\s*CQ:at[^\]]*\]/gi, '').trim()
+    const match = raw.match(/^(?:.*[\s:：,，])?(.+?)在干嘛[?？\s]*$/)
+    if (!match) {
+      logger.debug('[spy-status] 未匹配指令:', raw)
+      return
+    }
 
     const subject = match[1].trim()
+    logger.info('[spy-status] 指令主体:', subject)
     let names
     let isAllQuery = false
     if (subject === '所有人' || subject === '时间所有人') {
@@ -547,7 +557,8 @@ export class SpyStatus extends plugin {
       names = this.getNamesBySubject(subject)
     }
     if (!names || !Array.isArray(names) || names.length === 0) {
-      logger.warn('[spy-status] 未知指令:', subject)
+      logger.warn('[spy-status] 未知指令/未配置:', subject)
+      await this.e.reply(`未找到「${subject}」的配置，请检查 config/config/spy-status.yaml。`)
       return
     }
 
