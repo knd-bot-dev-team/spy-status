@@ -71,7 +71,7 @@ export class SpyStatus extends plugin {
       dsc: '查询桌面状态（多人，对接 Web/server.js）；人物与指令在 config/config/spy-status.yaml 配置',
       event: 'message',
       priority: 5000,
-      rule: [{ reg: /^(.+?)在干嘛\s*$/, fnc: 'query' }, { reg: regToday, fnc: 'queryToday' }],
+      rule: [{ reg: /^(?:.*?\s)?(.+?)在干嘛[?？\s]*$/, fnc: 'query' }, { reg: regToday, fnc: 'queryToday' }],
     })
     this.spyStatusCfg = spyCfg
   }
@@ -524,7 +524,7 @@ export class SpyStatus extends plugin {
     this.spyStatusCfg = loadSpyStatusConfig()
     const c = this.spyStatusCfg
     const raw = (this.e.msg || '').trim()
-    const match = raw.match(/^(.+?)在干嘛\s*$/)
+    const match = raw.match(/^(?:.*?\s)?(.+?)在干嘛[?？\s]*$/)
     if (!match) return
 
     const subject = match[1].trim()
