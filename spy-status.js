@@ -23,14 +23,34 @@ const CONFIG = {
   HEARTBEAT_INTERVAL_SECONDS: 60,
 }
 
-/** 从 config 加载 spy-status 配置（合并默认与用户配置） */
+const DEFAULT_SPY_STATUS_CONFIG = {
+  persons: [
+    { name: '雨核', trigger: '时间雨核' },
+    { name: '皮梦', trigger: '时间皮梦' },
+    { name: '音落', trigger: '时间音落' },
+    { name: '夜合', trigger: '时间夜合' },
+  ],
+  teamTrigger: '时间开发团队',
+  teamNames: ['雨核', '音落', '夜合', '皮梦'],
+  teamForwardTitle: '开发团队状态',
+  heartbeatIntervalSeconds: 60,
+}
+
+/** 从 config 加载 spy-status 配置（合并默认、用户配置和内置兜底） */
 function loadSpyStatusConfig() {
   try {
     const def = cfg.getdefSet('spy-status') || {}
     const user = cfg.getConfig('spy-status') || {}
-    return { ...def, ...user }
+    const merged = { ...DEFAULT_SPY_STATUS_CONFIG, ...def, ...user }
+    if (!Array.isArray(merged.persons) || merged.persons.length === 0) {
+      merged.persons = DEFAULT_SPY_STATUS_CONFIG.persons
+    }
+    if (!Array.isArray(merged.teamNames) || merged.teamNames.length === 0) {
+      merged.teamNames = DEFAULT_SPY_STATUS_CONFIG.teamNames
+    }
+    return merged
   } catch (e) {
-    return cfg.getdefSet('spy-status') || {}
+    return DEFAULT_SPY_STATUS_CONFIG
   }
 }
 /** 皮梦设备 ID，与 视奸皮梦.js 一致 */
