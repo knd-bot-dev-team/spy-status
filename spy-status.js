@@ -1,7 +1,8 @@
 /**
  * 桌面状态查询插件（多人版）
  * 调用 Web/server.js 的接口：/api/names、/api/current-status?name=xxx、/api/today-events?name=xxx
- * 指令格式：xx在干嘛，如「雨核在干嘛」「皮梦在干嘛」「开发团队在干嘛」「所有人在干嘛」。团队由 config 的 teamTrigger/teamNames 决定。
+ * 指令格式：xx在干嘛，如「雨核在干嘛」「皮梦在干嘛」「开发团队在干嘛」「所有人在干嘛」。
+ * 匹配规则按 persons[].name 进行；trigger/teamTrigger 仅为兼容旧版「时间xx」写法。
  * 「看看xx今天做了什么」：拉取当日上传事件，按心跳间隔统计设备与应用使用时长。
  *
  * 配置：
@@ -24,12 +25,15 @@ const CONFIG = {
 }
 
 const DEFAULT_SPY_STATUS_CONFIG = {
+  // persons[].name 是新指令 `xx在干嘛` 实际匹配的对象
+  // trigger 仅为兼容旧版 `时间xx` 写法，可不填
   persons: [
-    { name: '雨核', trigger: '时间雨核' },
-    { name: '皮梦', trigger: '时间皮梦' },
-    { name: '音落', trigger: '时间音落' },
-    { name: '夜合', trigger: '时间夜合' },
+    { name: '雨核' },
+    { name: '皮梦' },
+    { name: '音落' },
+    { name: '夜合' },
   ],
+  // teamTrigger 是旧版完整团队指令，新版会自动去掉「时间」前缀匹配
   teamTrigger: '时间开发团队',
   teamNames: ['雨核', '音落', '夜合', '皮梦'],
   teamForwardTitle: '开发团队状态',
