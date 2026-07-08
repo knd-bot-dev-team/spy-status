@@ -1,0 +1,15 @@
+name: astrbot_plugin_spy_status
+desc: 查询雨核、皮梦等成员的桌面在线状态（AstrBot 版）
+author: knd-bot-dev-team
+version: 1.0.0
+repo: https://github.com/knd-bot-dev-team/spy-status
+display_name: 视奸状态
+short_desc: 查询雨核、皮梦等成员的桌面在线状态。
+support_platforms:
+  - aiocqhttp
+  - qq_official
+  - telegram
+  - wecom
+  - lark
+  - discord
+astrbot_version: ">=4.16"
