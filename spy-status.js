@@ -1,12 +1,12 @@
 /**
  * 桌面状态查询插件（多人版）
  * 调用 Web/server.js 的接口：/api/names、/api/current-status?name=xxx、/api/today-events?name=xxx
- * 指令与数据对应：时间雨核→雨核，时间音落→音落，时间夜合→夜合，时间皮梦→皮梦；时间开发团队→雨核+音落+夜合+皮梦。每人展示与皮梦一致：手机/电脑各一块，每块只展示一条最新。
+ * 指令格式：xx在干嘛，如「雨核在干嘛」「皮梦在干嘛」「开发团队在干嘛」「所有人在干嘛」。团队由 config 的 teamTrigger/teamNames 决定。
  * 「看看xx今天做了什么」：拉取当日上传事件，按心跳间隔统计设备与应用使用时长。
  *
  * 配置：
- *   - SPY_API_BASE：雨核/音落/夜合 的 Web 服务端地址，默认 http://127.0.0.1:3100
- *   - SPY_PIMENG_API_BASE：皮梦数据源，与 视奸皮梦.js 的 API_URL 一致，默认 https://shijian.lyxmb.com
+ *   - SPY_API_BASE：音落/夜合 的 Web 服务端地址，默认 http://127.0.0.1:3100
+ *   - SPY_STATUS_API_BASE：雨核/皮梦 的统一状态数据源，默认 https://shijian.07210700.xyz
  *   - heartbeatIntervalSeconds：心跳间隔（秒），用于今日统计时长计算，默认 60
  */
 
@@ -16,8 +16,7 @@ import cfg from '../../lib/config/config.js'
 
 const CONFIG = {
   API_BASE: process.env.SPY_API_BASE || 'http://127.0.0.1:3100',
-  RAINCORE_API_BASE: (process.env.SPY_RAINCORE_API_BASE || 'https://shijian.07210700.xyz').replace(/\/$/, ''),
-  PIMENG_API_BASE: (process.env.SPY_PIMENG_API_BASE || 'https://shijian.lyxmb.com').replace(/\/$/, ''),
+  STATUS_API_BASE: (process.env.SPY_STATUS_API_BASE || 'https://shijian.07210700.xyz').replace(/\/$/, ''),
   TIMEOUT: 10000,
   PER_PERSON_LIMIT: 5,
   CACHE_EXPIRE_TIME: 8000,
@@ -65,9 +64,6 @@ export class SpyStatus extends plugin {
   constructor() {
     const spyCfg = loadSpyStatusConfig()
     const persons = Array.isArray(spyCfg.persons) ? spyCfg.persons : []
-    const teamTrigger = spyCfg.teamTrigger || '时间开发团队'
-    const triggers = [...persons.map((p) => (p && p.trigger) || '').filter(Boolean), teamTrigger, '时间所有人']
-    const reg = triggers.length > 0 ? new RegExp(`^(${triggers.join('|')})\\s*$`) : /^$/
     const todayNames = [...new Set([...persons.map((p) => p && p.name).filter(Boolean), ...(Array.isArray(spyCfg.teamNames) ? spyCfg.teamNames : [])])]
     const regToday = todayNames.length > 0 ? new RegExp(`^看看(${todayNames.join('|')})今天做了什么\\s*$`) : /^$/
     super({
@@ -75,7 +71,7 @@ export class SpyStatus extends plugin {
       dsc: '查询桌面状态（多人，对接 Web/server.js）；人物与指令在 config/config/spy-status.yaml 配置',
       event: 'message',
       priority: 5000,
-      rule: [{ reg, fnc: 'query' }, { reg: regToday, fnc: 'queryToday' }],
+      rule: [{ reg: /^(.+?)在干嘛\s*$/, fnc: 'query' }, { reg: regToday, fnc: 'queryToday' }],
     })
     this.spyStatusCfg = spyCfg
   }
@@ -408,17 +404,24 @@ export class SpyStatus extends plugin {
     return phoneBlock + '\n' + pcBlock
   }
 
-  /** 指令与名单映射：从 config 读取。时间所有人 不在此处返回，由 query 内从服务端 /api/names 拉取 */
-  getNamesByTrigger(trigger) {
+  /** 指令主体与名单映射：所有人 不在此处返回，由 query 内从服务端 /api/names 拉取 */
+  getNamesBySubject(subject) {
     const c = this.spyStatusCfg || loadSpyStatusConfig()
-    if (trigger === '时间所有人') return null
-    if (trigger === (c.teamTrigger || '时间开发团队')) {
+    if (this.isTeamSubject(subject)) {
       const names = Array.isArray(c.teamNames) ? c.teamNames : []
       return names.length > 0 ? names : null
     }
     const persons = Array.isArray(c.persons) ? c.persons : []
-    const p = persons.find((x) => x && x.trigger === trigger)
+    const p = persons.find((x) => x && (x.name === subject || x.trigger === subject))
     return p && p.name ? [p.name] : null
+  }
+
+  /** 判断指令主体是否为团队查询 */
+  isTeamSubject(subject) {
+    const c = this.spyStatusCfg || loadSpyStatusConfig()
+    const teamTrigger = c.teamTrigger || '时间开发团队'
+    const aliases = [teamTrigger, teamTrigger.replace(/^时间/, '')].filter(Boolean)
+    return aliases.includes(subject)
   }
 
   /** 某人是否使用独立 API 源（从 config 的 persons[].apiBase 读取） */
@@ -427,7 +430,7 @@ export class SpyStatus extends plugin {
     const persons = Array.isArray(c.persons) ? c.persons : []
     const p = persons.find((x) => x && x.name === name)
     if (p && p.apiBase) return String(p.apiBase).replace(/\/$/, '')
-    if (name === '雨核') return CONFIG.RAINCORE_API_BASE
+    if (name === '雨核' || name === '皮梦') return CONFIG.STATUS_API_BASE
     return CONFIG.API_BASE
   }
 
@@ -520,21 +523,19 @@ export class SpyStatus extends plugin {
   async query() {
     this.spyStatusCfg = loadSpyStatusConfig()
     const c = this.spyStatusCfg
-    const persons = Array.isArray(c.persons) ? c.persons : []
-    const teamTrigger = c.teamTrigger || '时间开发团队'
-    const triggers = [...persons.map((p) => (p && p.trigger) || '').filter(Boolean), teamTrigger, '时间所有人']
-    const reg = triggers.length > 0 ? new RegExp(`^(${triggers.join('|')})\\s*$`) : /^$/
     const raw = (this.e.msg || '').trim()
-    const match = raw.match(reg)
+    const match = raw.match(/^(.+?)在干嘛\s*$/)
     if (!match) return
 
-    const trigger = match[1]
+    const subject = match[1].trim()
     let names
-    if (trigger === '时间所有人') {
+    let isAllQuery = false
+    if (subject === '所有人' || subject === '时间所有人') {
+      isAllQuery = true
       try {
         names = await this.fetchNames()
       } catch (e) {
-        logger.error('[spy-status] 时间所有人：获取名单失败', e && e.message)
+        logger.error('[spy-status] 所有人：获取名单失败', e && e.message)
         await this.e.reply('获取所有人名单失败，请确认服务端已启动且 ' + CONFIG.API_BASE + ' 可访问。')
         return
       }
@@ -543,19 +544,20 @@ export class SpyStatus extends plugin {
         return
       }
     } else {
-      names = this.getNamesByTrigger(trigger)
+      names = this.getNamesBySubject(subject)
     }
     if (!names || !Array.isArray(names) || names.length === 0) {
-      logger.warn('[spy-status] 未知指令:', trigger)
+      logger.warn('[spy-status] 未知指令:', subject)
       return
     }
 
+    const isTeamQuery = this.isTeamSubject(subject) || isAllQuery
     const now = Date.now()
     const cacheKey = names.slice().sort().join(',')
     const cached = cache.byNames[cacheKey]
     if (cached && (now - cache.timestamp) < CONFIG.CACHE_EXPIRE_TIME) {
       if (Array.isArray(cached)) {
-        const title = trigger === '时间所有人' ? '所有人状态' : (c.teamForwardTitle || '开发团队状态')
+        const title = isAllQuery ? '所有人状态' : (c.teamForwardTitle || '开发团队状态')
         const forwardMsg = await common.makeForwardMsg(this.e, cached, title)
         await this.e.reply(forwardMsg)
       } else {
@@ -576,14 +578,13 @@ export class SpyStatus extends plugin {
       }
     }
 
-    const isTeamQuery = trigger === (c.teamTrigger || '时间开发团队') || trigger === '时间所有人'
     const isForward = isTeamQuery && blocks.length > 0
     if (isForward) {
-      const isDevTeam = trigger === (c.teamTrigger || '时间开发团队')
+      const isDevTeam = this.isTeamSubject(subject)
       const forwardBlocks = isDevTeam ? ['这是当前knd dev team成员状态', ...blocks] : blocks
       cache.byNames[cacheKey] = forwardBlocks
       cache.timestamp = now
-      const title = trigger === '时间所有人' ? '所有人状态' : (c.teamForwardTitle || '开发团队状态')
+      const title = isAllQuery ? '所有人状态' : (c.teamForwardTitle || '开发团队状态')
       const forwardMsg = await common.makeForwardMsg(this.e, forwardBlocks, title)
       await this.e.reply(forwardMsg)
     } else {
