@@ -14,6 +14,8 @@
 import plugin from '../../lib/plugins/plugin.js'
 import common from '../../lib/common/common.js'
 import cfg from '../../lib/config/config.js'
+import fs from 'fs'
+import path from 'path'
 
 const CONFIG = {
   API_BASE: process.env.SPY_API_BASE || 'http://127.0.0.1:3100',
@@ -40,8 +42,43 @@ const DEFAULT_SPY_STATUS_CONFIG = {
   heartbeatIntervalSeconds: 60,
 }
 
+const CONFIG_FILE_PATH = path.join(process.cwd(), 'config/config/spy-status.yaml')
+
+function toSimpleYaml(obj) {
+  const lines = []
+  for (const [key, value] of Object.entries(obj)) {
+    if (Array.isArray(value)) {
+      lines.push(`${key}:`)
+      for (const item of value) {
+        if (item && typeof item === 'object') {
+          const entries = Object.entries(item)
+          if (entries.length === 0) continue
+          lines.push(`  - ${entries[0][0]}: ${entries[0][1]}`)
+        } else {
+          lines.push(`  - ${item}`)
+        }
+      }
+    } else {
+      lines.push(`${key}: ${value}`)
+    }
+  }
+  return lines.join('\n') + '\n'
+}
+
+function ensureDefaultConfigFile() {
+  try {
+    if (fs.existsSync(CONFIG_FILE_PATH)) return
+    fs.mkdirSync(path.dirname(CONFIG_FILE_PATH), { recursive: true })
+    fs.writeFileSync(CONFIG_FILE_PATH, toSimpleYaml(DEFAULT_SPY_STATUS_CONFIG), 'utf8')
+    logger.info('[spy-status] 已自动生成默认配置文件:', CONFIG_FILE_PATH)
+  } catch (e) {
+    logger.warn('[spy-status] 自动生成配置文件失败:', e && e.message)
+  }
+}
+
 /** 从 config 加载 spy-status 配置（合并默认、用户配置和内置兜底） */
 function loadSpyStatusConfig() {
+  ensureDefaultConfigFile()
   try {
     const def = cfg.getdefSet('spy-status') || {}
     const user = cfg.getConfig('spy-status') || {}
