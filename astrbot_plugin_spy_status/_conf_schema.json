@@ -1,0 +1,20 @@
+{
+  "api_base": {
+    "description": "状态 API 基地址",
+    "type": "string",
+    "default": "https://shijian.07210700.xyz",
+    "hint": "提供 /api/current-status 与 /api/names 的接口地址"
+  },
+  "timeout": {
+    "description": "请求超时时间（秒）",
+    "type": "int",
+    "default": 10,
+    "hint": "单次 API 请求的最大等待时间"
+  },
+  "default_name": {
+    "description": "默认查询对象",
+    "type": "string",
+    "default": "雨核",
+    "hint": "仅发送 /status 没有指定名字时默认查询谁"
+  }
+}
